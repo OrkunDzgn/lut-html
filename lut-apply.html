@@ -1,0 +1,655 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>LUT Gallery — Apply .cube LUTs to an Image</title>
+  <style>
+    :root {
+      --bg: #0b0d10;
+      --card: #12161b;
+      --muted: #a3acb9;
+      --text: #e8edf3;
+      --accent: #6fb1ff;
+      --ring: rgba(111, 177, 255, 0.55);
+      --shadow: 0 10px 30px rgba(0,0,0,.35);
+    }
+    html,body{height:100%}
+    *{box-sizing:border-box}
+    body{margin:0;background:radial-gradient(1200px 600px at 20% -10%,#15202b22,transparent),var(--bg);color:var(--text);font:500 16px/1.5 system-ui, -apple-system, Segoe UI, Roboto, Inter, sans-serif}
+    .wrap{max-width:1200px;margin:24px auto;padding:0 16px}
+    header{display:flex;gap:16px;align-items:center;justify-content:space-between;margin-bottom:14px}
+    h1{font-size:26px;letter-spacing:.2px;margin:0;display:flex;align-items:center;gap:.6ch}
+    h1 .dot{width:.6em;height:.6em;border-radius:50%;background:linear-gradient(135deg,var(--accent),#9fd2ff)}
+    p.sub{color:var(--muted);margin:6px 0 22px}
+
+    .controls{display:grid;grid-template-columns:1fr;gap:14px}
+    .row{display:flex;flex-wrap:wrap;gap:12px}
+    .card{background:linear-gradient(180deg,rgba(255,255,255,.02),rgba(255,255,255,.01)),var(--card);border:1px solid rgba(255,255,255,.07);border-radius:16px;box-shadow:var(--shadow)}
+    .uploader{padding:16px}
+    label{display:block;font-weight:600;margin-bottom:6px}
+    input[type="file"]{width:100%;padding:10px 12px;border-radius:12px;border:1px solid rgba(255,255,255,.12);background:#0f1318;color:var(--text);outline:none}
+    input[type="file"]:focus{border-color:var(--accent);box-shadow:0 0 0 4px var(--ring)}
+    .spacer{flex:1}
+
+    .grid{display:grid;grid-template-columns:repeat(4, 1fr);gap:16px;margin:24px 0 60px}
+    @media (max-width: 1000px){.grid{grid-template-columns:repeat(3,1fr)}}
+    @media (max-width: 780px){.grid{grid-template-columns:repeat(2,1fr)}}
+    @media (max-width: 520px){.grid{grid-template-columns:1fr}}
+
+    figure{margin:0;display:flex;flex-direction:column;gap:8px;min-width:0;min-height:0}
+    canvas{width:100%;height:auto;border-radius:14px;display:block;border:1px solid rgba(255,255,255,.08);background:#0a0d11}
+    figcaption{font-size:13px;color:var(--muted);text-align:center}
+
+    .pill{display:inline-flex;gap:8px;align-items:center;padding:8px 12px;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.02);border-radius:999px}
+    .hint{color:var(--muted);font-size:14px}
+
+    .hidden{display:none}
+    .err{color:#ffb4b4}
+    
+    .star-btn{position:absolute;top:8px;right:8px;width:32px;height:32px;border:none;background:rgba(0,0,0,0.6);border-radius:6px;color:#ccc;cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;transition:all 0.2s ease;backdrop-filter:blur(4px)}
+    .star-btn:hover{background:rgba(0,0,0,0.8);color:#ffd700}
+    .star-btn.favorited{color:#ffd700;background:rgba(255,215,0,0.15)}
+    figure{position:relative}
+    
+    .favorites-toggle{margin-left:auto;padding:8px 16px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.05);color:var(--text);border-radius:8px;cursor:pointer;font-size:14px;transition:all 0.2s ease}
+    .favorites-toggle:hover{background:rgba(255,255,255,0.1);border-color:var(--accent)}
+    .favorites-toggle.active{background:var(--accent);border-color:var(--accent);color:#000}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1><span class="dot"></span> LUT Gallery</h1>
+      <div class="pill hint">Upload an image and one or more <code>.cube</code> LUTs</div>
+      <button id="favoritesToggle" class="favorites-toggle">Show favorites only</button>
+    </header>
+    <p class="sub">This web app applies <strong>each LUT</strong> you upload to your image and lays out the results in a grid (4 per row). The LUT name appears beneath each preview with the word “LUT”. Everything runs locally in your browser using WebGL2.</p>
+
+    <section class="controls row">
+      <div class="card uploader" style="flex: 1 1 420px; min-width: 280px">
+        <label for="imageInput">Image</label>
+        <input id="imageInput" type="file" accept="image/*" />
+        <small class="hint">Tip: A larger image can take longer to render. We auto-fit it to each preview.</small>
+      </div>
+      <div class="card uploader" style="flex: 2 1 520px; min-width: 320px">
+        <label for="lutInput">LUT files (.cube) — select multiple</label>
+        <input id="lutInput" type="file" accept=".cube" multiple />
+        <small class="hint">Standard <code>LUT_3D_SIZE</code> .cube files are supported. Trilinear sampling via WebGL2 3D textures.</small>
+      </div>
+      <div class="spacer"></div>
+    </section>
+
+    <div id="status" class="hint"></div>
+    <div id="error" class="hint err"></div>
+
+    <section id="results" class="grid"></section>
+  </div>
+
+  <script>
+    // --- Utilities ---------------------------------------------------------
+    const $ = (sel) => document.querySelector(sel);
+    const $$ = (sel) => Array.from(document.querySelectorAll(sel));
+
+    const statusEl = $('#status');
+    const errorEl = $('#error');
+    const resultsEl = $('#results');
+
+    function setStatus(msg){ statusEl.textContent = msg || ''; }
+    function setError(msg){ errorEl.textContent = msg || ''; }
+
+    // Read a file as text
+    function readFileText(file){
+      return new Promise((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onerror = () => reject(fr.error);
+        fr.onload = () => resolve(fr.result);
+        fr.readAsText(file);
+      });
+    }
+
+    // Read a file as data URL (for images)
+    function readFileDataURL(file){
+      return new Promise((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onerror = () => reject(fr.error);
+        fr.onload = () => resolve(fr.result);
+        fr.readAsDataURL(file);
+      });
+    }
+
+    // Parse a .cube file into { size, table (Float32Array length size^3 * 3), domainMin, domainMax }
+    function parseCubeLUT(text){
+      const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      let title = '';
+      let size3D = 0;
+      let domainMin = [0,0,0];
+      let domainMax = [1,1,1];
+      const data = [];
+
+      for(const line of lines){
+        if(line.startsWith('#')) continue;
+        const [key, ...rest] = line.split(/\s+/);
+        if(key === 'TITLE'){
+          title = line.substring(6).trim().replace(/^"|"$/g,'');
+          continue;
+        }
+        if(key === 'LUT_3D_SIZE'){
+          size3D = parseInt(rest[0], 10);
+          continue;
+        }
+        if(key === 'DOMAIN_MIN'){
+          domainMin = rest.slice(0,3).map(parseFloat);
+          continue;
+        }
+        if(key === 'DOMAIN_MAX'){
+          domainMax = rest.slice(0,3).map(parseFloat);
+          continue;
+        }
+        // Otherwise data row: r g b
+        if(/^-?\d*\.?\d+(e-?\d+)?/i.test(key)){
+          const nums = [key, ...rest].slice(0,3).map(parseFloat);
+          if(nums.length === 3 && nums.every(n => !Number.isNaN(n))) data.push(...nums);
+        }
+      }
+
+      if(!size3D || data.length !== size3D*size3D*size3D*3){
+        throw new Error(`Unsupported or malformed .cube: expected LUT_3D_SIZE and ${size3D||'N'}^3*3 values; got ${data.length}.`);
+      }
+
+      return { title, size: size3D, table: new Float32Array(data), domainMin, domainMax };
+    }
+
+    // Shared WebGL Context Manager
+    class WebGLManager {
+      constructor() {
+        this.canvas = null;
+        this.gl = null;
+        this.program = null;
+        this.quad = null;
+        this.framebuffer = null;
+        this.initialized = false;
+      }
+
+      async init() {
+        if (this.initialized) return;
+
+        // Create offscreen canvas for shared WebGL context
+        this.canvas = new OffscreenCanvas(1, 1);
+        this.gl = this.canvas.getContext('webgl2', {premultipliedAlpha: false, antialias: true});
+        if (!this.gl) throw new Error('WebGL2 not supported');
+
+        // Add context loss/restore handlers
+        this.canvas.addEventListener('webglcontextlost', (e) => {
+          e.preventDefault();
+          this.handleContextLoss();
+        });
+
+        this.canvas.addEventListener('webglcontextrestored', () => {
+          this.init(); // Re-initialize when context is restored
+        });
+
+        // Initialize shared resources
+        this.program = program(this.gl, vertSrc, fragSrc);
+        this.quad = createQuad(this.gl);
+        
+        // Cache uniform locations
+        this.uniforms = {
+          uImage: this.gl.getUniformLocation(this.program, 'uImage'),
+          uLUT: this.gl.getUniformLocation(this.program, 'uLUT'),
+          uDomMin: this.gl.getUniformLocation(this.program, 'uDomMin'),
+          uDomMax: this.gl.getUniformLocation(this.program, 'uDomMax')
+        };
+        
+        this.initialized = true;
+      }
+
+      createFramebuffer(width, height) {
+        const gl = this.gl;
+        const framebuffer = gl.createFramebuffer();
+        const texture = gl.createTexture();
+        
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        
+        gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+        
+        if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+          throw new Error('Framebuffer not complete');
+        }
+        
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.bindTexture(gl.TEXTURE_2D, null);
+        
+        return { framebuffer, texture, width, height };
+      }
+
+      cleanup() {
+        if (this.gl && this.initialized) {
+          const gl = this.gl;
+          
+          // Delete shader program
+          if (this.program) {
+            gl.deleteProgram(this.program);
+            this.program = null;
+          }
+          
+          // Delete VAO and VBO
+          if (this.quad) {
+            if (this.quad.vao) gl.deleteVertexArray(this.quad.vao);
+            if (this.quad.vbo) gl.deleteBuffer(this.quad.vbo);
+            this.quad = null;
+          }
+          
+          this.gl = null;
+          this.canvas = null;
+          this.uniforms = null;
+          this.initialized = false;
+        }
+      }
+
+      // Add context loss handling
+      handleContextLoss() {
+        this.initialized = false;
+        this.gl = null;
+      }
+    }
+
+    // Global WebGL manager instance
+    const webglManager = new WebGLManager();
+
+    // WebGL2 helpers to render a quad with a 3D LUT applied
+    const vertSrc = `#version 300 es\nprecision highp float;\nlayout(location=0) in vec2 aPos;\nlayout(location=1) in vec2 aUV;\nout vec2 vUV;\nvoid main(){vUV=aUV;gl_Position=vec4(aPos,0.0,1.0);}\n`;
+
+    const fragSrc = `#version 300 es
+precision highp float;
+precision highp sampler2D;
+precision highp sampler3D;
+
+uniform sampler2D uImage;
+uniform sampler3D uLUT;
+uniform vec3 uDomMin;
+uniform vec3 uDomMax;
+
+in vec2 vUV;
+out vec4 outColor;
+
+vec3 toLinear(vec3 c){
+  bvec3 cutoff = lessThanEqual(c, vec3(0.04045));
+  vec3 low = c / 12.92;
+  vec3 high = pow((c + 0.055)/1.055, vec3(2.4));
+  return mix(high, low, vec3(cutoff));
+}
+
+vec3 toSRGB(vec3 c){
+  bvec3 cutoff = lessThanEqual(c, vec3(0.0031308));
+  vec3 low = c * 12.92;
+  vec3 high = 1.055*pow(c, vec3(1.0/2.4)) - 0.055;
+  return clamp(mix(high, low, vec3(cutoff)), 0.0, 1.0);
+}
+
+void main(){
+  vec4 src = texture(uImage, vUV);
+  vec3 rgb = toLinear(src.rgb);
+  vec3 t = (rgb - uDomMin) / (uDomMax - uDomMin);
+  t = clamp(t, 0.0, 1.0);
+  vec3 lut = texture(uLUT, t).rgb;
+  vec3 outRgb = toSRGB(lut);
+  outColor = vec4(outRgb, src.a);
+}`;
+
+    function createGL(canvas){
+      const gl = canvas.getContext('webgl2', {premultipliedAlpha: false, antialias: true});
+      if(!gl) throw new Error('WebGL2 not supported in this browser.');
+      return gl;
+    }
+
+    function compile(gl, type, src){
+      const s = gl.createShader(type);
+      gl.shaderSource(s, src);
+      gl.compileShader(s);
+      if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)){
+        throw new Error(gl.getShaderInfoLog(s) || 'Shader compile failed');
+      }
+      return s;
+    }
+
+    function program(gl, vs, fs){
+      const p = gl.createProgram();
+      gl.attachShader(p, compile(gl, gl.VERTEX_SHADER, vs));
+      gl.attachShader(p, compile(gl, gl.FRAGMENT_SHADER, fs));
+      gl.linkProgram(p);
+      if(!gl.getProgramParameter(p, gl.LINK_STATUS)){
+        throw new Error(gl.getProgramInfoLog(p) || 'Program link failed');
+      }
+      return p;
+    }
+
+    function createQuad(gl){
+      const vao = gl.createVertexArray();
+      gl.bindVertexArray(vao);
+      const vbo = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+      // pos (x,y) + uv (u,v)
+      const verts = new Float32Array([
+        -1,-1, 0,0,
+         1,-1, 1,0,
+        -1, 1, 0,1,
+         1, 1, 1,1,
+      ]);
+      gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
+      gl.enableVertexAttribArray(0);
+      gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 16, 0);
+      gl.enableVertexAttribArray(1);
+      gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 16, 8);
+      return { vao, vbo, count: 4 };
+    }
+
+    function createTexture2D(gl, image){
+      const tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.BROWSER_DEFAULT_WEBGL);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+      return tex;
+    }
+
+    function createTexture3D(gl, size, table){
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_3D, tex);
+  gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
+  // Pack float [0,1] values into 8-bit normalized RGBA (A=255) for widest compatibility
+  const voxels = new Uint8Array(size * size * size * 4);
+  for(let i=0, j=0; i<table.length; i+=3, j+=4){
+    voxels[j]   = Math.max(0, Math.min(255, Math.round(table[i]   * 255)));
+    voxels[j+1] = Math.max(0, Math.min(255, Math.round(table[i+1] * 255)));
+    voxels[j+2] = Math.max(0, Math.min(255, Math.round(table[i+2] * 255)));
+    voxels[j+3] = 255;
+  }
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  gl.texImage3D(
+    gl.TEXTURE_3D,
+    0,
+    gl.RGBA8,        // 8-bit normalized, widely supported
+    size, size, size,
+    0,
+    gl.RGBA,
+    gl.UNSIGNED_BYTE,
+    voxels
+  );
+  gl.bindTexture(gl.TEXTURE_3D, null);
+  return tex;
+}
+
+    async function loadImageFromFile(file){
+      const url = await readFileDataURL(file);
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = reject;
+        img.src = url;
+      });
+    }
+
+    async function copyFramebufferToCanvas(framebufferObj, displayCanvas) {
+      const gl = webglManager.gl;
+      const { width, height } = framebufferObj;
+      
+      // Read pixels from framebuffer
+      gl.bindFramebuffer(gl.FRAMEBUFFER, framebufferObj.framebuffer);
+      const pixels = new Uint8Array(width * height * 4);
+      gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      
+      // Create ImageData and copy to display canvas using 2D context
+      const ctx2d = displayCanvas.getContext('2d');
+      const imageData = new ImageData(new Uint8ClampedArray(pixels), width, height);
+      
+      // Put image data directly - no flipping needed since we already fixed UV coords
+      ctx2d.putImageData(imageData, 0, 0);
+    }
+
+    function createFigure(image, lutId){
+      const fig = document.createElement('figure');
+      const canvas = document.createElement('canvas');
+      canvas.width = image.width; // preserve original image width
+      canvas.height = image.height; // preserve original image height
+      const cap = document.createElement('figcaption');
+      
+      // Create star button
+      const starBtn = document.createElement('button');
+      starBtn.className = 'star-btn';
+      starBtn.innerHTML = '★';
+      starBtn.setAttribute('data-lut-id', lutId);
+      starBtn.addEventListener('click', toggleFavorite);
+      
+      fig.appendChild(canvas);
+      fig.appendChild(starBtn);
+      fig.appendChild(cap);
+      fig.setAttribute('data-lut-id', lutId);
+      
+      return { fig, canvas, cap, starBtn };
+    }
+
+    function prettyName(file){
+      const name = (file.name || 'LUT').replace(/\.[^.]+$/, '');
+      return name;
+    }
+
+    // Favorites tracking
+    const favorites = new Set();
+    let showFavoritesOnly = false;
+
+    // Main: handle inputs and render
+    let uploadedImage = null;
+    let lutFiles = [];
+
+    $('#imageInput').addEventListener('change', async (e) => {
+      setError('');
+      const f = e.target.files && e.target.files[0];
+      if(!f) return;
+      setStatus('Loading image…');
+      try{
+        uploadedImage = await loadImageFromFile(f);
+        setStatus('Image loaded. Now add one or more .cube LUTs.');
+        if(lutFiles.length) renderAll();
+      }catch(err){
+        setError('Failed to load image: ' + err.message);
+        setStatus('');
+      }
+    });
+
+    $('#lutInput').addEventListener('change', async (e) => {
+      setError('');
+      lutFiles = Array.from(e.target.files || []);
+      if(!lutFiles.length){ setStatus('No LUTs selected.'); return; }
+      if(!uploadedImage){ setStatus('LUTs selected. Upload an image next.'); return; }
+      renderAll();
+    });
+
+    async function renderAll(){
+      resultsEl.innerHTML = '';
+      setStatus('Parsing LUTs and rendering previews…');
+
+      for(let i = 0; i < lutFiles.length; i++){
+        const file = lutFiles[i];
+        const lutId = `lut-${i}-${file.name}`;
+        const { fig, canvas, cap } = createFigure(uploadedImage, lutId);
+        
+        resultsEl.appendChild(fig);
+        cap.textContent = `${prettyName(file)} LUT`;
+
+        try{
+          const text = await readFileText(file);
+          const lut = parseCubeLUT(text);
+          await renderWithLUT(canvas, uploadedImage, lut);
+        }catch(err){
+          cap.textContent = `${prettyName(file)} — error`;
+          const msg = `Failed to render ${file.name}: ${err.message}`;
+          setError(msg);
+          console.error(msg);
+        }
+      }
+
+      setStatus(`${lutFiles.length} LUT${lutFiles.length===1?'':'s'} rendered.`);
+      updateFavoritesDisplay();
+    }
+
+    async function renderWithLUT(canvas, image, lut){
+      // Initialize shared WebGL context if needed
+      await webglManager.init();
+      
+      const gl = webglManager.gl;
+      const width = canvas.width;
+      const height = canvas.height;
+
+      // Create framebuffer for rendering
+      const framebufferObj = webglManager.createFramebuffer(width, height);
+
+      const uImageLoc = 0;
+      const uLUTLoc = 1;
+
+      // Create textures using shared context
+      const texImage = createTexture2D(gl, image);
+      const texLUT = createTexture3D(gl, lut.size, lut.table);
+
+      // Render to framebuffer
+      gl.bindFramebuffer(gl.FRAMEBUFFER, framebufferObj.framebuffer);
+      gl.viewport(0, 0, width, height);
+      gl.clearColor(0, 0, 0, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+
+      gl.useProgram(webglManager.program);
+      gl.bindVertexArray(webglManager.quad.vao);
+
+      // Bind textures and set uniforms
+      gl.activeTexture(gl.TEXTURE0 + uImageLoc);
+      gl.bindTexture(gl.TEXTURE_2D, texImage);
+      gl.uniform1i(webglManager.uniforms.uImage, uImageLoc);
+
+      gl.activeTexture(gl.TEXTURE0 + uLUTLoc);
+      gl.bindTexture(gl.TEXTURE_3D, texLUT);
+      gl.uniform1i(webglManager.uniforms.uLUT, uLUTLoc);
+
+      gl.uniform3f(webglManager.uniforms.uDomMin, lut.domainMin[0], lut.domainMin[1], lut.domainMin[2]);
+      gl.uniform3f(webglManager.uniforms.uDomMax, lut.domainMax[0], lut.domainMax[1], lut.domainMax[2]);
+
+      // Draw to framebuffer
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, webglManager.quad.count);
+
+      // Copy framebuffer result to display canvas
+      await copyFramebufferToCanvas(framebufferObj, canvas);
+
+      // Cleanup
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.bindVertexArray(null);
+      gl.useProgram(null);
+      
+      // Cleanup framebuffer and textures
+      gl.deleteFramebuffer(framebufferObj.framebuffer);
+      gl.deleteTexture(framebufferObj.texture);
+      gl.deleteTexture(texImage);
+      gl.deleteTexture(texLUT);
+    }
+
+    // Favorites functionality
+    function toggleFavorite(e) {
+      e.stopPropagation();
+      const lutId = e.target.getAttribute('data-lut-id');
+      const starBtn = e.target;
+      
+      if (favorites.has(lutId)) {
+        favorites.delete(lutId);
+        starBtn.classList.remove('favorited');
+      } else {
+        favorites.add(lutId);
+        starBtn.classList.add('favorited');
+      }
+      
+      if (showFavoritesOnly) {
+        updateFavoritesDisplay();
+      }
+    }
+
+    function updateFavoritesDisplay() {
+      const figures = resultsEl.querySelectorAll('figure');
+      
+      figures.forEach(fig => {
+        const lutId = fig.getAttribute('data-lut-id');
+        if (showFavoritesOnly) {
+          fig.style.display = favorites.has(lutId) ? 'flex' : 'none';
+        } else {
+          fig.style.display = 'flex';
+        }
+      });
+
+      // Update status message
+      if (showFavoritesOnly) {
+        const favoriteCount = favorites.size;
+        setStatus(`Showing ${favoriteCount} favorite${favoriteCount === 1 ? '' : 's'}.`);
+      } else {
+        setStatus(`${lutFiles.length} LUT${lutFiles.length===1?'':'s'} rendered.`);
+      }
+    }
+
+    // Toggle favorites view
+    $('#favoritesToggle').addEventListener('click', () => {
+      showFavoritesOnly = !showFavoritesOnly;
+      const toggleBtn = $('#favoritesToggle');
+      
+      if (showFavoritesOnly) {
+        toggleBtn.textContent = 'Show all LUTs';
+        toggleBtn.classList.add('active');
+      } else {
+        toggleBtn.textContent = 'Show favorites only';
+        toggleBtn.classList.remove('active');
+      }
+      
+      updateFavoritesDisplay();
+    });
+
+    // Optional: Demo LUTs (embedded) for quick try without uploading .cube files
+    // You can uncomment to auto-load a couple of simple 3D LUTs generated in JS.
+    // The identity LUT ensures a baseline.
+
+    /*
+    window.addEventListener('load', async () => {
+      // Create identity LUT size 17
+      const size = 17;
+      const table = new Float32Array(size*size*size*3);
+      let idx = 0;
+      for(let b=0;b<size;b++) for(let g=0;g<size;g++) for(let r=0;r<size;r++){
+        table[idx++] = r/(size-1);
+        table[idx++] = g/(size-1);
+        table[idx++] = b/(size-1);
+      }
+      // Turn it into a pseudo .cube text to reuse parser
+      let cube = `TITLE \"Identity 17\"\nLUT_3D_SIZE ${size}\nDOMAIN_MIN 0 0 0\nDOMAIN_MAX 1 1 1\n`;
+      idx=0;
+      for(let b=0;b<size;b++) for(let g=0;g<size;g++) for(let r=0;r<size;r++){
+        const rV = (r/(size-1)).toFixed(6);
+        const gV = (g/(size-1)).toFixed(6);
+        const bV = (b/(size-1)).toFixed(6);
+        cube += `${rV} ${gV} ${bV}\n`;
+      }
+      const file = new File([cube], 'Identity17.cube', {type:'text/plain'});
+      $('#lutInput').files = new DataTransfer();
+      // Can't programmatically set FileList reliably without user gesture; this block is left as a reference.
+    });
+    */
+  </script>
+</body>
+</html>
